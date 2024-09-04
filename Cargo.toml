@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.28.1"
-egui = "0.28.1"
+eframe = "0.28"
 
 [profile.release]
 panic = "abort" # Strip expensive panic clean-up logic
