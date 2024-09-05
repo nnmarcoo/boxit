@@ -1,5 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use eframe::{egui::{menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, RichText, TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand}, Frame};
+use eframe::{
+    egui::{
+        menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, RichText,
+        TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand,
+    },
+    Frame,
+};
 use image::{self, load_from_memory};
 use webbrowser::open;
 
@@ -15,7 +21,7 @@ impl Boxit {
 
     fn load_embedded_image(ctx: &Context) -> TextureHandle {
         let image_data = include_bytes!("../assets/logo_gray_smal.png");
-        
+
         let img = load_from_memory(image_data).expect("Failed to load embedded image");
         let img = img.to_rgba8();
         let size = [img.width() as usize, img.height() as usize];
@@ -24,7 +30,7 @@ impl Boxit {
         let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
         ctx.load_texture("embedded_image", color_image, Default::default())
     }
-    
+
     fn render_title_bar(&self, ctx: &Context) {
         TopBottomPanel::top("title_bar").show(ctx, |ui| {
             ui.add_space(5.);
@@ -38,7 +44,10 @@ impl Boxit {
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(Button::new(RichText::new("✖").size(20.)).rounding(3.)).clicked() {
+                    if ui
+                        .add(Button::new(RichText::new("✖").size(20.)).rounding(3.))
+                        .clicked()
+                    {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                     }
                 });
@@ -69,5 +78,9 @@ fn main() -> eframe::Result<(), eframe::Error> {
 
         ..Default::default()
     };
-    eframe::run_native("Boxit", native_options, Box::new(|cc| Ok(Box::new(Boxit::new(cc)))))
+    eframe::run_native(
+        "Boxit",
+        native_options,
+        Box::new(|cc| Ok(Box::new(Boxit::new(cc)))),
+    )
 }
