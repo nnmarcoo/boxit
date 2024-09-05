@@ -1,11 +1,28 @@
-use eframe::{egui::{menu, Align, Button, Context, Label, Layout, TopBottomPanel, ViewportCommand, CentralPanel, ViewportBuilder}, Frame};
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use eframe::{egui::{menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, RichText, TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand}, Frame};
+use image::{self, load_from_memory};
+use webbrowser::open;
 
 #[derive(Default)]
-struct Boxit {}
+struct Boxit {
+    texture: Option<TextureHandle>,
+}
 
 impl Boxit {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self::default()
+    }
+
+    fn load_embedded_image(ctx: &Context) -> TextureHandle {
+        let image_data = include_bytes!("../assets/logo_gray_smal.png");
+        
+        let img = load_from_memory(image_data).expect("Failed to load embedded image");
+        let img = img.to_rgba8();
+        let size = [img.width() as usize, img.height() as usize];
+        let pixels = img.into_raw();
+
+        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+        ctx.load_texture("embedded_image", color_image, Default::default())
     }
     
     fn render_title_bar(&self, ctx: &Context) {
@@ -13,10 +30,15 @@ impl Boxit {
             ui.add_space(5.);
             menu::bar(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(Label::new("❏"));
+                    if let Some(texture) = &self.texture {
+                        if ui.add(ImageButton::new(texture).rounding(3.)).clicked() {
+                            open("https://github.com/nnmarcoo/boxit").unwrap();
+                        }
+                    }
                 });
+
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(Button::new("✖")).clicked() {
+                    if ui.add(Button::new(RichText::new("✖").size(20.)).rounding(3.)).clicked() {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                     }
                 });
@@ -28,6 +50,10 @@ impl Boxit {
 
 impl eframe::App for Boxit {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        if self.texture.is_none() {
+            self.texture = Some(Self::load_embedded_image(ctx));
+        }
+
         self.render_title_bar(ctx);
         CentralPanel::default().show(ctx, |ui| {
             ui.heading("Hello World!");
