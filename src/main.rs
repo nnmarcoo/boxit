@@ -20,7 +20,7 @@ impl Boxit {
     }
 
     fn load_embedded_image(ctx: &Context) -> TextureHandle {
-        let image_data = include_bytes!("../assets/logo_gray_smal.png");
+        let image_data = include_bytes!("../assets/logo_gray_small.png");
 
         let img = load_from_memory(image_data).expect("Failed to load embedded image");
         let img = img.to_rgba8();
