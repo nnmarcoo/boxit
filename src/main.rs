@@ -1,8 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::{
     egui::{
-        menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, RichText,
-        TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand,
+        menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, PointerButton, RichText, Sense, TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand
     },
     Frame,
 };
@@ -33,11 +32,22 @@ impl Boxit {
 
     fn render_title_bar(&self, ctx: &Context) {
         TopBottomPanel::top("title_bar").show(ctx, |ui| {
-            ui.add_space(5.);
+            if ui
+                .interact(ui.max_rect(), ui.id(), Sense::click_and_drag())
+                .drag_started_by(PointerButton::Primary)
+            {
+                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+
+            ui.add_space(4.);
             menu::bar(ui, |ui| {
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     if let Some(texture) = &self.texture {
-                        if ui.add(ImageButton::new(texture).rounding(3.)).clicked() {
+                        if ui
+                            .add(ImageButton::new(texture).rounding(3.))
+                            .on_hover_text("v0.1.0")
+                            .clicked()
+                        {
                             open("https://github.com/nnmarcoo/boxit").unwrap();
                         }
                     }
@@ -45,14 +55,15 @@ impl Boxit {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .add(Button::new(RichText::new("✖").size(20.)).rounding(3.))
+                        .add(Button::new(RichText::new("\u{1F5D9}").size(20.)).rounding(3.))
+                        .on_hover_text("Close")
                         .clicked()
                     {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                     }
                 });
             });
-            ui.add_space(5.);
+            ui.add_space(2.);
         });
     }
 }
