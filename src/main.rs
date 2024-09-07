@@ -104,6 +104,7 @@ impl eframe::App for Boxit {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         if self.texture.is_none() {
             self.texture = Some(Self::load_embedded_image(ctx));
+            ctx.send_viewport_cmd(ViewportCommand::center_on_screen(ctx).unwrap());
         }
 
         self.render_title_bar(ctx);
@@ -117,7 +118,9 @@ fn main() -> eframe::Result<(), eframe::Error> {
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_decorations(false)
-            .with_inner_size([400.0, 300.0]),
+            .with_inner_size([400.0, 300.0])
+            .with_title("Boxit")
+            .with_always_on_top(),
 
         ..Default::default()
     };
