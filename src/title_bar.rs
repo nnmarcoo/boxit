@@ -36,12 +36,10 @@ pub fn render_title_bar(app: &Boxit, ctx: &Context) {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
 
-                ui.add_space(-4.);
-
                 if ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
                     if ui
                         .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
-                        .on_hover_text("Restore window")
+                        .on_hover_text("Restore")
                         .clicked()
                     {
                         ui.ctx()
@@ -50,14 +48,12 @@ pub fn render_title_bar(app: &Boxit, ctx: &Context) {
                 } else {
                     if ui
                         .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
-                        .on_hover_text("Maximize window")
+                        .on_hover_text("Maximize")
                         .clicked()
                     {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(true));
                     }
                 }
-
-                ui.add_space(-4.);
 
                 if ui
                     .add(Button::new(RichText::new("\u{1F5D5}").size(20.)).rounding(3.))
