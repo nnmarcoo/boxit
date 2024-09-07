@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use eframe::{
     egui::{
-        menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, PointerButton, RichText, Sense, TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand
+        menu, Align, Button, CentralPanel, ColorImage, Context, ImageButton, Layout, PointerButton,
+        RichText, Sense, TextureHandle, TopBottomPanel, ViewportBuilder, ViewportCommand,
     },
     Frame,
 };
@@ -60,6 +61,37 @@ impl Boxit {
                         .clicked()
                     {
                         ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                    }
+
+                    ui.add_space(-4.);
+
+                    if ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                        if ui
+                            .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
+                            .on_hover_text("Restore window")
+                            .clicked()
+                        {
+                            ui.ctx()
+                                .send_viewport_cmd(ViewportCommand::Maximized(false));
+                        }
+                    } else {
+                        if ui
+                            .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
+                            .on_hover_text("Maximize window")
+                            .clicked()
+                        {
+                            ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(true));
+                        }
+                    }
+
+                    ui.add_space(-4.);
+
+                    if ui
+                        .add(Button::new(RichText::new("\u{1F5D5}").size(20.)).rounding(3.))
+                        .on_hover_text("Minimize")
+                        .clicked()
+                    {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                     }
                 });
             });
