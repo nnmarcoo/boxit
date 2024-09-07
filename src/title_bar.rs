@@ -29,7 +29,7 @@ pub fn render_title_bar(app: &Boxit, ctx: &Context) {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add(Button::new(RichText::new("\u{1F5D9}").size(20.)).rounding(3.))
+                    .add_enabled(!app.busy, Button::new(RichText::new("\u{1F5D9}").size(20.)).rounding(3.))
                     .on_hover_text("Close")
                     .clicked()
                 {

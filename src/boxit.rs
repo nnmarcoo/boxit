@@ -7,11 +7,13 @@ use eframe::{
 
 pub struct Boxit {
     pub texture: Option<TextureHandle>,
+    pub busy: bool,
 }
 
 impl Default for Boxit {
     fn default() -> Self {
-        Self { texture: None }
+        Self { texture: None,
+               busy: false }
     }
 }
 
