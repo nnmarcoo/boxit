@@ -1,6 +1,7 @@
+use crate::logo::draw_logo;
 use crate::Boxit;
 use eframe::egui::{
-    menu, Align, Button, Context, ImageButton, Layout, PointerButton, RichText, Sense,
+    menu, vec2, Align, Button, Context, Layout, PointerButton, Pos2, RichText, Sense,
     TopBottomPanel, ViewportCommand,
 };
 
@@ -16,20 +17,22 @@ pub fn render_title_bar(app: &Boxit, ctx: &Context) {
         ui.add_space(4.);
         menu::bar(ui, |ui| {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                if let Some(texture) = &app.texture {
-                    if ui
-                        .add(ImageButton::new(texture).rounding(3.))
-                        .on_hover_text("v0.1.0")
-                        .clicked()
-                    {
-                        webbrowser::open("https://github.com/nnmarcoo/boxit").unwrap();
-                    }
+                let res = ui
+                    .add(Button::new("").min_size(vec2(25., 25.)).rounding(3.))
+                    .on_hover_text("v0.1.0");
+                draw_logo(res.rect.left_top(), ui, 20., Pos2::new(2.5, 2.5));
+
+                if res.clicked() {
+                    webbrowser::open("https://github.com/nnmarcoo/boxit").unwrap();
                 }
             });
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add_enabled(!app.busy, Button::new(RichText::new("\u{1F5D9}").size(20.)).rounding(3.))
+                    .add_enabled(
+                        !app.busy,
+                        Button::new(RichText::new("\u{1F5D9}").size(20.)).rounding(3.),
+                    )
                     .on_hover_text("Close")
                     .clicked()
                 {

@@ -1,14 +1,19 @@
-use eframe::egui::{ColorImage, Context, TextureHandle};
-use image::load_from_memory;
+use std::collections::HashMap;
+use walkdir::WalkDir;
 
-pub fn load_embedded_image(ctx: &Context) -> TextureHandle {
-    let image_data = include_bytes!("../assets/logo_gray_small.png");
+pub fn get_files() -> HashMap<String, String> {
+    let mut files: HashMap<String, String> = HashMap::new();
+    for entry in WalkDir::new(".") {
+        let entry = entry.unwrap();
+        if entry.file_name() == "." {
+            continue;
+        }
 
-    let img = load_from_memory(image_data).expect("Failed to load embedded image");
-    let img = img.to_rgba8();
-    let size = [img.width() as usize, img.height() as usize];
-    let pixels = img.into_raw();
+        let file_name = entry.file_name().to_string_lossy().into();
+        let mut path = entry.path().to_string_lossy().into_owned();
+        path.remove(0);
 
-    let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-    ctx.load_texture("embedded_image", color_image, Default::default())
+        files.insert(file_name, path);
+    }
+    files
 }
