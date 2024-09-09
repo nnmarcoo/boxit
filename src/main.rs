@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod boxit;
+mod folder;
 mod logo;
 mod title_bar;
-mod utils;
+mod files_window;
 
 use boxit::Boxit;
 use eframe::{egui::ViewportBuilder, run_native, Error, NativeOptions, Result};
