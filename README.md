@@ -1,7 +1,7 @@
 <h1 align="center">
   <picture><img src="./assets/logo-gray.png" height="100"/></picture>
   <br />
-  img
+  boxit
 </h1>
 <h3 align="center">
   <img alt="GitHub Release" src="https://img.shields.io/github/v/release/nnmarcoo/boxit?style=for-the-badge&color=%2376ABAE">
