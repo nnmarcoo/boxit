@@ -7,11 +7,16 @@ use eframe::egui::{
 
 pub fn render_title_bar(app: &Boxit, ctx: &Context) {
     TopBottomPanel::top("title_bar").show(ctx, |ui| {
-        if ui
-            .interact(ui.max_rect(), ui.id(), Sense::click_and_drag())
-            .drag_started_by(PointerButton::Primary)
-        {
+        let response = ui.interact(ui.max_rect(), ui.id(), Sense::click_and_drag());
+
+        if response.drag_started_by(PointerButton::Primary) {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+
+        if response.double_clicked_by(PointerButton::Primary) {
+            let is_maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Maximized(!is_maximized));
         }
 
         ui.add_space(4.);
@@ -39,23 +44,18 @@ pub fn render_title_bar(app: &Boxit, ctx: &Context) {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
 
-                if ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
-                    if ui
-                        .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
-                        .on_hover_text("Restore")
-                        .clicked()
-                    {
-                        ui.ctx()
-                            .send_viewport_cmd(ViewportCommand::Maximized(false));
-                    }
-                } else {
-                    if ui
-                        .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
-                        .on_hover_text("Maximize")
-                        .clicked()
-                    {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(true));
-                    }
+                if ui
+                    .add(Button::new(RichText::new("\u{1F5D6}").size(20.)).rounding(3.))
+                    .on_hover_text(if ui.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                        "Restore"
+                    } else {
+                        "Maximize"
+                    })
+                    .clicked()
+                {
+                    let is_maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ui.ctx()
+                        .send_viewport_cmd(ViewportCommand::Maximized(!is_maximized));
                 }
 
                 if ui
