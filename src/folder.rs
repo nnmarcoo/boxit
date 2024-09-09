@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use eframe::egui::{CollapsingHeader, Ui};
+use eframe::egui::{CollapsingHeader, Label, Ui};
 
 #[derive(Debug)]
 pub struct Folder {
@@ -61,7 +61,7 @@ impl Folder {
                 .show(ui, |ui| {
                     for file in &self.files {
                         if file.contains(filter) {
-                            ui.label(file);
+                            ui.add(Label::new(file).truncate());
                         }
                     }
 
