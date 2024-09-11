@@ -5,6 +5,7 @@ mod files_window;
 mod folder;
 mod logo;
 mod title_bar;
+mod util;
 
 use boxit::Boxit;
 use eframe::{egui::ViewportBuilder, run_native, Error, NativeOptions, Result};
