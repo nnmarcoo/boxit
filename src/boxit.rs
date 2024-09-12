@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, thread};
 use std::path::Path;
 
 use crate::files_window::render_files_window;
@@ -49,8 +49,11 @@ impl App for Boxit {
         self.get_files_if_needed();
 
         render_title_bar(self, ctx);
-        CentralPanel::default().show(ctx, |_ui| {
+        CentralPanel::default().show(ctx, |ui| {
             render_files_window(self, ctx);
+            if ui.button("compress test").clicked() {
+                let _ = self.files.compress(Path::new("."), Path::new("test.tar.gz"));
+            }
         });
     }
 }

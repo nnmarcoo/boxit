@@ -1,7 +1,11 @@
-use std::collections::HashMap;
+use std::io;
+use std::{collections::HashMap, fs::File};
 use std::path::Path;
 
 use eframe::egui::{CollapsingHeader, Label, Ui};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use tar::Builder;
 
 #[derive(Debug)]
 pub struct Folder {
@@ -70,6 +74,21 @@ impl Folder {
                     }
                 });
         }
+    }
+
+    pub fn compress(&self, src: &Path, dest: &Path) -> io::Result<()> {
+        let tar_gz = File::create(dest)?;
+        let enc = GzEncoder::new(tar_gz, Compression::default());
+        let mut tar = Builder::new(enc);
+
+        
+
+        Ok(())
+    }
+
+    pub fn build_tar() -> io::Result<()> {
+
+        Ok(())
     }
 
     fn contains(&self, filter: &str) -> bool {

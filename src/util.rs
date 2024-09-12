@@ -1,4 +1,0 @@
-
-pub fn compress() {
-    todo!()
-}
