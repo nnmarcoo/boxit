@@ -2,8 +2,10 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use eframe::egui::IconData;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use image::load_from_memory;
 use tar::Builder;
 
 pub fn compress() -> io::Result<()> {
@@ -41,4 +43,22 @@ fn add_directory_to_tar<W: io::Write>(tar: &mut Builder<W>, base_dir: &Path, bas
         }
     }
     Ok(())
+}
+
+pub fn load_icon() -> IconData {
+	let (icon_rgba, icon_width, icon_height) = {
+		let icon = include_bytes!("../assets/icon_128.png");
+		let image = load_from_memory(icon)
+			.expect("Failed to open icon path")
+			.into_rgba8();
+		let (width, height) = image.dimensions();
+		let rgba = image.into_raw();
+		(rgba, width, height)
+	};
+	
+	IconData {
+		rgba: icon_rgba,
+		width: icon_width,
+		height: icon_height,
+	}
 }

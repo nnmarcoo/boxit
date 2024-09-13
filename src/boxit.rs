@@ -51,8 +51,8 @@ impl App for Boxit {
 
         render_title_bar(self, ctx);
         CentralPanel::default().show(ctx, |ui| {
-            render_files_window(self, ctx);
-            if ui.button("compress test").clicked() {
+            //render_files_window(self, ctx);
+            if ui.button("Compress").clicked() {
                 thread::spawn(|| { let _ = compress(); }); 
             }
         });
