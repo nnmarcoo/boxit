@@ -1,11 +1,7 @@
-use std::io;
-use std::{collections::HashMap, fs::File};
+use std::collections::HashMap;
 use std::path::Path;
 
 use eframe::egui::{CollapsingHeader, Label, Ui};
-use flate2::write::GzEncoder;
-use flate2::Compression;
-use tar::Builder;
 
 #[derive(Debug)]
 pub struct Folder {
