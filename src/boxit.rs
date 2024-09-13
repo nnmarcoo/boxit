@@ -1,6 +1,7 @@
 use std::{env, thread};
 use std::path::Path;
 
+use crate::util::compress;
 use crate::files_window::render_files_window;
 use crate::folder::Folder;
 use crate::title_bar::render_title_bar;
@@ -52,7 +53,7 @@ impl App for Boxit {
         CentralPanel::default().show(ctx, |ui| {
             render_files_window(self, ctx);
             if ui.button("compress test").clicked() {
-                let _ = Folder::build_tar();
+                thread::spawn(|| { let _ = compress(); }); 
             }
         });
     }

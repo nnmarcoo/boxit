@@ -76,45 +76,6 @@ impl Folder {
         }
     }
 
-    pub fn compress(&self, src: &Path, dest: &Path) -> io::Result<()> {
-        let tar_gz = File::create(dest)?;
-        let enc = GzEncoder::new(tar_gz, Compression::best());
-        let mut tar = Builder::new(enc);
-
-        self.add_to_tar(&mut tar, src, &Path::new(""))?;
-
-        tar.finish()?;
-        Ok(())
-    }
-
-    fn add_to_tar<W: io::Write>(&self, tar: &mut Builder<W>, src: &Path, base_path: &Path) -> io::Result<()> {
-        for file in &self.files {
-            let file_path = src.join(base_path).join(file);
-
-            if file_path.ends_with(std::env::current_exe()?) {
-                continue; 
-            }
-
-            tar.append_path_with_name(&file_path, base_path.join(file))?;
-        }
-
-        for (folder_name, subfolder) in &self.subfolders {
-            let folder_path = base_path.join(folder_name);
-            tar.append_dir(&folder_path, src.join(&folder_path))?;
-            subfolder.add_to_tar(tar, src, &folder_path)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn build_tar() -> io::Result<()> {
-        let current_dir = std::env::current_dir()?;
-        let mut folder = Folder::new(current_dir.to_string_lossy().into_owned());
-        folder.build(&current_dir);
-        let output_archive = current_dir.join("files.box");
-        folder.compress(&current_dir, &output_archive)
-    }
-
     fn contains(&self, filter: &str) -> bool {
         self.name.contains(filter)
             || self.files.iter().any(|file| file.contains(filter))
