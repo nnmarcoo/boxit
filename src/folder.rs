@@ -1,4 +1,4 @@
-use std::{env, io};
+use std::io;
 use std::{collections::HashMap, fs::File};
 use std::path::Path;
 
@@ -77,9 +77,9 @@ impl Folder {
     }
 
     pub fn compress(&self, src: &Path, dest: &Path) -> io::Result<()> {
-        let tar_gz = File::create(dest)?; // Destination .tar.gz file
-        let enc = GzEncoder::new(tar_gz, Compression::default()); // GZip encoder
-        let mut tar = Builder::new(enc); // Create a tar builder with the encoder
+        let tar_gz = File::create(dest)?;
+        let enc = GzEncoder::new(tar_gz, Compression::best());
+        let mut tar = Builder::new(enc);
 
         self.add_to_tar(&mut tar, src, &Path::new(""))?;
 
@@ -95,7 +95,6 @@ impl Folder {
                 continue; 
             }
 
-            let mut file_handle = File::open(&file_path)?;
             tar.append_path_with_name(&file_path, base_path.join(file))?;
         }
 
@@ -112,7 +111,7 @@ impl Folder {
         let current_dir = std::env::current_dir()?;
         let mut folder = Folder::new(current_dir.to_string_lossy().into_owned());
         folder.build(&current_dir);
-        let output_archive = current_dir.join("archive.tar.gz");
+        let output_archive = current_dir.join("files.box");
         folder.compress(&current_dir, &output_archive)
     }
 
