@@ -1,5 +1,5 @@
 <h1 align="center">
-  <picture><img src="./assets/logo-gray.png" height="100"/></picture>
+  <picture><img src="./assets/icon_500.png" height="100"/></picture>
   <br />
   boxit
 </h1>
