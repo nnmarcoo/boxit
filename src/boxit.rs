@@ -52,7 +52,7 @@ impl App for Boxit {
         CentralPanel::default().show(ctx, |ui| {
             render_files_window(self, ctx);
             if ui.button("compress test").clicked() {
-                let _ = self.files.compress(Path::new("."), Path::new("test.tar.gz"));
+                let _ = Folder::build_tar();
             }
         });
     }

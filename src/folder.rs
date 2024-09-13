@@ -1,4 +1,4 @@
-use std::io;
+use std::{env, io};
 use std::{collections::HashMap, fs::File};
 use std::path::Path;
 
@@ -77,18 +77,43 @@ impl Folder {
     }
 
     pub fn compress(&self, src: &Path, dest: &Path) -> io::Result<()> {
-        let tar_gz = File::create(dest)?;
-        let enc = GzEncoder::new(tar_gz, Compression::default());
-        let mut tar = Builder::new(enc);
+        let tar_gz = File::create(dest)?; // Destination .tar.gz file
+        let enc = GzEncoder::new(tar_gz, Compression::default()); // GZip encoder
+        let mut tar = Builder::new(enc); // Create a tar builder with the encoder
 
-        
+        self.add_to_tar(&mut tar, src, &Path::new(""))?;
+
+        tar.finish()?;
+        Ok(())
+    }
+
+    fn add_to_tar<W: io::Write>(&self, tar: &mut Builder<W>, src: &Path, base_path: &Path) -> io::Result<()> {
+        for file in &self.files {
+            let file_path = src.join(base_path).join(file);
+
+            if file_path.ends_with(std::env::current_exe()?) {
+                continue; 
+            }
+
+            let mut file_handle = File::open(&file_path)?;
+            tar.append_path_with_name(&file_path, base_path.join(file))?;
+        }
+
+        for (folder_name, subfolder) in &self.subfolders {
+            let folder_path = base_path.join(folder_name);
+            tar.append_dir(&folder_path, src.join(&folder_path))?;
+            subfolder.add_to_tar(tar, src, &folder_path)?;
+        }
 
         Ok(())
     }
 
     pub fn build_tar() -> io::Result<()> {
-
-        Ok(())
+        let current_dir = std::env::current_dir()?;
+        let mut folder = Folder::new(current_dir.to_string_lossy().into_owned());
+        folder.build(&current_dir);
+        let output_archive = current_dir.join("archive.tar.gz");
+        folder.compress(&current_dir, &output_archive)
     }
 
     fn contains(&self, filter: &str) -> bool {
