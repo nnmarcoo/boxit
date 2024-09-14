@@ -6,10 +6,9 @@ edition = "2021"
 [dependencies]
 eframe = "0.28.1"
 webbrowser = "1.0.1"
-walkdir = "2.5.0"
 tar = "0.4.41"
 flate2 = "1.0.33"
-image = "*"
+image = "0.25.2"
 
 [profile.release]
 panic = "abort" # Strip expensive panic clean-up logic
