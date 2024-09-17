@@ -1,5 +1,6 @@
-use crate::compress::compress;
+use crate::compress::{compress_tar, compress};
 use std::thread;
+use std::time::Instant;
 
 use crate::title_bar::render_title_bar;
 use eframe::{
@@ -29,8 +30,10 @@ impl App for Boxit {
         CentralPanel::default().show(ctx, |ui| {
             if ui.button("Compress").clicked() {
                 thread::spawn(|| {
-                    let _ = compress();
-                    println!("Done");
+                    let start = Instant::now(); // Start timer
+                    let _ = compress_tar();
+                    let duration = start.elapsed(); // Measure elapsed time
+                    println!("Compression took: {:?}", duration);
                 });
             }
         });

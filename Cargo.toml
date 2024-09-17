@@ -9,6 +9,7 @@ webbrowser = "1.0.1"
 tar = "0.4.41"
 flate2 = "1.0.33"
 image = "0.25.2"
+rayon = "1.10.0"
 
 [profile.release]
 panic = "abort" # Strip expensive panic clean-up logic

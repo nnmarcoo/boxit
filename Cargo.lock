@@ -615,6 +615,7 @@ dependencies = [
  "eframe",
  "flate2",
  "image",
+ "rayon",
  "tar",
  "webbrowser",
 ]
