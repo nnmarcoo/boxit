@@ -34,13 +34,42 @@ pub struct Entry {
     pub encrypted_size: u64,
 }
 
+/// What a sweep did, for reporting in the UI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    pub files: usize,
+    pub directories: usize,
+    pub bytes: u64,
+    /// Entries that could not be encrypted, with the reason. Their plaintext is
+    /// left untouched rather than deleted.
+    pub failed: Vec<(String, String)>,
+}
+
+impl SweepReport {
+    pub fn is_empty(&self) -> bool {
+        self.files == 0 && self.directories == 0 && self.failed.is_empty()
+    }
+}
+
 /// An unlocked vault.
 ///
 /// Holds the master key in memory; dropping it zeroizes the key material.
+///
+/// The `Debug` impl deliberately omits the key — a stray `{:?}` in a log line
+/// must never be able to print key material.
 pub struct Vault {
     root: PathBuf,
     master: Key,
     lock: Option<VaultLock>,
+}
+
+impl std::fmt::Debug for Vault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vault")
+            .field("root", &self.root)
+            .field("master", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Vault {
@@ -171,6 +200,146 @@ impl Vault {
 
         entries.sort_by(|a, b| (b.is_dir, &a.name).cmp(&(a.is_dir, &b.name)));
         Ok(entries)
+    }
+
+    /// Encrypt every plaintext file found inside the vault directory.
+    ///
+    /// This is the "lockdown folder" behaviour: drop files into the vault, and
+    /// they get swallowed. An entry is treated as plaintext when its name does
+    /// not decrypt under its parent's key — the same test [`list`] uses to
+    /// decide what to show, so anything invisible in the UI is exactly what
+    /// gets encrypted here.
+    ///
+    /// **The originals are deleted** once the encrypted copy is written and
+    /// verified. Ordering matters: encrypt to a new name, read it back, and
+    /// only then unlink the plaintext. A crash mid-sweep can leave both copies
+    /// (recoverable) but never neither (not).
+    ///
+    /// A caveat worth stating plainly, since this design chooses convenience
+    /// over the stronger guarantee: plaintext genuinely exists in the vault
+    /// directory until this runs, and deleting a file does not reliably erase
+    /// it from an SSD (§6.2). This narrows the exposure window; it does not
+    /// eliminate it.
+    pub fn encrypt_plaintext(&self, vpath: &VirtualPath) -> Result<SweepReport, CryptoError> {
+        let mut report = SweepReport::default();
+        self.sweep_dir(vpath, &mut report)?;
+        Ok(report)
+    }
+
+    fn sweep_dir(
+        &self,
+        vpath: &VirtualPath,
+        report: &mut SweepReport,
+    ) -> Result<(), CryptoError> {
+        let real = self.resolve(vpath)?;
+        let names = self.master.names_key()?;
+        let parent = self.dir_id(vpath)?;
+
+        // Collected up front: encrypting renames entries, and mutating a
+        // directory while iterating it has platform-dependent behaviour.
+        let listing: Vec<_> = stdfs::read_dir(&real)?.collect::<Result<Vec<_>, _>>()?;
+
+        for entry in listing {
+            let file_name = entry.file_name();
+            let on_disk = file_name.to_string_lossy().into_owned();
+
+            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
+                continue;
+            }
+            // Debris from an interrupted write, not user data.
+            if on_disk.starts_with(".tmp") {
+                continue;
+            }
+
+            let is_dir = entry.file_type()?.is_dir();
+
+            match decrypt_name(&names, &parent, &on_disk) {
+                // Already encrypted. Recurse to catch plaintext dropped into an
+                // existing vault subdirectory.
+                Ok(plain) => {
+                    if is_dir {
+                        let child = vpath.join(&plain).map_err(|_| CryptoError::InvalidName)?;
+                        self.sweep_dir(&child, report)?;
+                    }
+                }
+                // Plaintext: swallow it.
+                Err(_) => {
+                    if let Err(e) = self.swallow(vpath, &on_disk, is_dir, report) {
+                        report.failed.push((on_disk, e.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Encrypt one plaintext entry in place, then remove the original.
+    fn swallow(
+        &self,
+        parent_vpath: &VirtualPath,
+        plain_name: &str,
+        is_dir: bool,
+        report: &mut SweepReport,
+    ) -> Result<(), CryptoError> {
+        // A name too long to encrypt would otherwise fail after the plaintext
+        // was already gone. Check before touching anything.
+        let target = parent_vpath
+            .join(plain_name)
+            .map_err(|_| CryptoError::InvalidName)?;
+
+        let real_parent = self.resolve(parent_vpath)?;
+        let plain_path = real_parent.join(plain_name);
+
+        if is_dir {
+            // Create the encrypted directory, then sweep the plaintext contents
+            // into it before removing the now-empty original.
+            self.create_dir(&target)?;
+            self.move_tree_in(&plain_path, &target, report)?;
+            stdfs::remove_dir_all(&plain_path)?;
+            report.directories += 1;
+            return Ok(());
+        }
+
+        let contents = stdfs::read(&plain_path)?;
+        self.write_file(&target, &contents)?;
+
+        // Read back before deleting the original: if this file cannot be
+        // recovered, the plaintext is the only copy and must survive.
+        let check = self.read_file(&target)?;
+        if check != contents {
+            return Err(CryptoError::Decrypt);
+        }
+
+        stdfs::remove_file(&plain_path)?;
+        report.files += 1;
+        report.bytes += contents.len() as u64;
+        Ok(())
+    }
+
+    /// Recursively encrypt a plaintext directory's contents into the vault.
+    fn move_tree_in(
+        &self,
+        plain_dir: &Path,
+        dest: &VirtualPath,
+        report: &mut SweepReport,
+    ) -> Result<(), CryptoError> {
+        for entry in stdfs::read_dir(plain_dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let target = dest.join(&name).map_err(|_| CryptoError::InvalidName)?;
+
+            if entry.file_type()?.is_dir() {
+                self.create_dir(&target)?;
+                self.move_tree_in(&entry.path(), &target, report)?;
+                report.directories += 1;
+            } else {
+                let contents = stdfs::read(entry.path())?;
+                self.write_file(&target, &contents)?;
+                report.files += 1;
+                report.bytes += contents.len() as u64;
+            }
+        }
+        Ok(())
     }
 
     /// Create a directory.

@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         ["import", dir, src, dest] => cmd_import(Path::new(dir), Path::new(src), dest),
         ["export", dir, path, dest] => cmd_export(Path::new(dir), path, Path::new(dest)),
         ["cat", dir, path] => cmd_cat(Path::new(dir), path),
+        ["lock", dir] => cmd_lock(Path::new(dir)),
         _ => {
             usage();
             return ExitCode::FAILURE;
@@ -52,6 +53,7 @@ usage:
   boxit import <vault-dir> <src-file|src-dir> <vault-path>
   boxit export <vault-dir> <vault-path> <dest-file>
   boxit cat    <vault-dir> <vault-path>
+  boxit lock   <vault-dir>              encrypt any plaintext in the vault
 
 The passphrase is read from BOXIT_PASSPHRASE."
     );
@@ -146,6 +148,28 @@ fn cmd_export(dir: &Path, path: &str, dest: &Path) -> Result<()> {
     // only because the caller asked for it by name.
     std::fs::write(dest, &contents)?;
     println!("exported {} bytes to {}", contents.len(), dest.display());
+
+    vault.close()?;
+    Ok(())
+}
+
+/// Encrypt any plaintext sitting in the vault folder, deleting the originals.
+fn cmd_lock(dir: &Path) -> Result<()> {
+    let vault = open(dir)?;
+    let report = vault.encrypt_plaintext(&VirtualPath::root())?;
+
+    if report.is_empty() {
+        println!("nothing to encrypt");
+    } else {
+        println!(
+            "encrypted {} file(s), {} folder(s), {} bytes",
+            report.files, report.directories, report.bytes
+        );
+    }
+    for (name, why) in &report.failed {
+        // Still plaintext on disk — say so rather than burying it in a count.
+        eprintln!("could not encrypt {name}: {why} (left unencrypted)");
+    }
 
     vault.close()?;
     Ok(())
