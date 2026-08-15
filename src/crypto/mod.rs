@@ -4,6 +4,7 @@
 //! Everything here is testable headlessly, which is the point of milestone 1.
 
 pub mod kdf;
+pub mod names;
 pub mod stream;
 
 use std::fmt;
@@ -25,6 +26,18 @@ pub enum CryptoError {
     Decrypt,
     /// The stream ended before a complete chunk was available.
     Truncated,
+    /// A filename was empty, malformed, or not a valid single path component.
+    InvalidName,
+    /// A filename is too long to survive encryption within filesystem limits.
+    NameTooLong,
+    /// The vault header is missing, malformed, or not a boxit header.
+    BadHeader,
+    /// The vault was written by a different format version.
+    UnsupportedVersion(u16),
+    /// A vault already exists at this location.
+    AlreadyInitialized,
+    /// The operation is not supported by this version.
+    UnsupportedOperation,
     Io(std::io::Error),
 }
 
@@ -39,6 +52,22 @@ impl fmt::Display for CryptoError {
                 "decryption failed: wrong passphrase, or the data is corrupt or has been modified"
             ),
             Self::Truncated => write!(f, "the encrypted data is incomplete"),
+            Self::InvalidName => write!(f, "invalid file name"),
+            Self::BadHeader => write!(f, "the vault header is missing or corrupt"),
+            Self::AlreadyInitialized => write!(f, "a vault already exists here"),
+            Self::UnsupportedOperation => {
+                write!(f, "that operation is not supported yet")
+            }
+            Self::UnsupportedVersion(v) => write!(
+                f,
+                "this vault uses format version {v}, but this build only supports version {}",
+                crate::vault::header::FORMAT_VERSION
+            ),
+            Self::NameTooLong => write!(
+                f,
+                "file name is too long to store in this vault (limit {} bytes)",
+                crate::crypto::names::MAX_NAME_LEN
+            ),
             Self::Io(e) => write!(f, "i/o error: {e}"),
         }
     }

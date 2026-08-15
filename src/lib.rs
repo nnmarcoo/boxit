@@ -5,3 +5,4 @@
 //! headless by design — no iced window until both pass their tests (§8).
 
 pub mod crypto;
+pub mod vault;

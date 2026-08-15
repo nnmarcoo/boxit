@@ -155,12 +155,16 @@ fn read_chunk<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize, CryptoEr
 
 /// Ciphertext length for a given plaintext length, for progress reporting and
 /// preallocation.
-pub fn ciphertext_len(plaintext_len: u64) -> u64 {
+pub const fn ciphertext_len(plaintext_len: u64) -> u64 {
     let chunk = CHUNK_SIZE as u64;
     // Chunks are only emitted for data that exists, so an exact multiple of
     // CHUNK_SIZE produces no trailing empty chunk. An empty plaintext is the
     // one exception: it still produces a single empty, authenticated chunk.
-    let chunks = plaintext_len.div_ceil(chunk).max(1);
+    let chunks = if plaintext_len == 0 {
+        1
+    } else {
+        plaintext_len.div_ceil(chunk)
+    };
     STREAM_NONCE_LEN as u64 + plaintext_len + chunks * TAG_LEN as u64
 }
 

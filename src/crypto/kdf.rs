@@ -20,6 +20,7 @@ pub const SALT_LEN: usize = 16;
 /// Domain separation for subkey derivation. Distinct labels must never collide.
 const LABEL_CONTENT: &[u8] = b"boxit:v1:content";
 const LABEL_NAMES: &[u8] = b"boxit:v1:names";
+const LABEL_NAMES_2: &[u8] = b"boxit:v1:names2";
 
 /// 32 bytes of secret key material, wiped on drop.
 ///
@@ -54,6 +55,15 @@ impl Key {
     /// Derive the filename-encryption subkey (§5.3).
     pub fn names_key(&self) -> Result<Key, CryptoError> {
         self.subkey(LABEL_NAMES)
+    }
+
+    /// Second half of the AES-SIV key material.
+    ///
+    /// AES-256-SIV needs 64 bytes: one half keys S2V, the other keys CTR. The
+    /// two halves must be independent, so this is a separately labelled
+    /// derivation rather than a copy of the first half.
+    pub fn names_half(&self) -> Result<Key, CryptoError> {
+        self.subkey(LABEL_NAMES_2)
     }
 
     /// Derive a labelled subkey from this key.
@@ -109,6 +119,24 @@ impl Default for KdfParams {
 }
 
 impl KdfParams {
+    /// Upper bound on memory cost accepted from a header: 1 GiB.
+    ///
+    /// A corrupt or hostile header could otherwise name a multi-terabyte
+    /// m_cost, turning "open this vault" into an out-of-memory abort.
+    const MAX_M_COST: u32 = 1024 * 1024;
+    /// Upper bound on time cost, to keep a corrupt header from hanging unlock.
+    const MAX_T_COST: u32 = 64;
+
+    /// Whether these parameters are safe to hand to Argon2.
+    pub fn is_sane(&self) -> bool {
+        self.m_cost >= Params::MIN_M_COST
+            && self.m_cost <= Self::MAX_M_COST
+            && self.t_cost >= Params::MIN_T_COST
+            && self.t_cost <= Self::MAX_T_COST
+            && self.p_cost >= Params::MIN_P_COST
+            && self.p_cost <= Params::MAX_P_COST
+    }
+
     fn to_argon2(self) -> Result<Argon2<'static>, CryptoError> {
         let params = Params::new(self.m_cost, self.t_cost, self.p_cost, Some(KEY_LEN))
             .map_err(|_| CryptoError::KeyDerivation)?;
