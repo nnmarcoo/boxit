@@ -38,6 +38,8 @@ pub enum CryptoError {
     AlreadyInitialized,
     /// The operation is not supported by this version.
     UnsupportedOperation,
+    /// The drive does not have room to convert the vault safely.
+    NotEnoughSpace { needed: u64, available: u64 },
     Io(std::io::Error),
 }
 
@@ -58,6 +60,13 @@ impl fmt::Display for CryptoError {
             Self::UnsupportedOperation => {
                 write!(f, "that operation is not supported yet")
             }
+            Self::NotEnoughSpace { needed, available } => write!(
+                f,
+                "not enough free disk space: about {} MB is needed but only {} MB is free. \
+                 Files are written before the originals are removed, so some headroom is required.",
+                needed / (1024 * 1024),
+                available / (1024 * 1024)
+            ),
             Self::UnsupportedVersion(v) => write!(
                 f,
                 "this vault uses format version {v}, but this build only supports version {}",

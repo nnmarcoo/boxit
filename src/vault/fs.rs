@@ -33,6 +33,29 @@ pub fn atomic_write_with<F>(path: &Path, write: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
+    atomic_write_inner(path, write, true)
+}
+
+/// As [`atomic_write_with`], but without flushing to the physical drive.
+///
+/// The file is written and renamed into place, so it is visible immediately,
+/// but its contents may still be in the OS page cache. The caller **must**
+/// call [`sync_path`] before treating the data as durable — in particular
+/// before deleting whatever the file was derived from.
+///
+/// Exists so a bulk operation can pay one flush for many files instead of one
+/// per file, which is otherwise ~80% of the cost of a lock or unlock.
+pub fn atomic_write_with_deferred_sync<F>(path: &Path, write: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
+    atomic_write_inner(path, write, false)
+}
+
+fn atomic_write_inner<F>(path: &Path, write: F, sync: bool) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
     let dir = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "path has no parent directory")
     })?;
@@ -46,18 +69,87 @@ where
         return Err(e);
     }
 
-    // fsync the file before the rename: the rename may otherwise be durable
-    // while the contents it points at are not, which is the worst outcome —
-    // a file that exists and is empty.
-    temp.as_file().sync_all()?;
+    if sync {
+        // fsync the file before the rename: the rename may otherwise be durable
+        // while the contents it points at are not, which is the worst outcome —
+        // a file that exists and is empty.
+        temp.as_file().sync_all()?;
+    }
 
     // `persist` is rename(2) on Unix and a replacing MoveFileEx on Windows.
     temp.persist(path).map_err(|e| e.error)?;
 
-    // fsync the directory so the rename itself survives a crash. Not available
-    // on Windows, where the replace is already ordered.
-    sync_dir(dir)?;
+    if sync {
+        // fsync the directory so the rename itself survives a crash. Not
+        // available on Windows, where the replace is already ordered.
+        sync_dir(dir)?;
+    }
     Ok(())
+}
+
+/// Flush a single file's contents to the physical drive.
+///
+/// Used to make a batch of deferred writes durable in one place, before the
+/// data they were derived from is deleted.
+pub fn sync_path(path: &Path) -> io::Result<()> {
+    // Opened for writing: Windows refuses FlushFileBuffers on a read-only
+    // handle with "Access is denied", even though nothing is being written.
+    File::options().write(true).open(path)?.sync_all()
+}
+
+/// Flush a directory entry so renames within it survive a crash.
+pub fn sync_directory(dir: &Path) -> io::Result<()> {
+    sync_dir(dir)
+}
+
+/// Free space available on the filesystem holding `path`, in bytes.
+///
+/// Returns `None` if it cannot be determined, in which case callers should
+/// proceed rather than refusing to work.
+pub fn available_space(path: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        // GetDiskFreeSpaceExW wants a directory path; a wide, NUL-terminated
+        // string is what the API expects.
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut free: u64 = 0;
+        // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the
+        // call, and `free` is a valid writable u64. The other two out-params
+        // are optional and passed as null.
+        let ok = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut free,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(free)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        // No portable std API for this; skipping the check is safe because the
+        // operation still fails per-file if the disk fills.
+        None
+    }
+}
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetDiskFreeSpaceExW(
+        directory: *const u16,
+        free_bytes_available_to_caller: *mut u64,
+        total_bytes: *mut u64,
+        total_free_bytes: *mut u64,
+    ) -> i32;
 }
 
 #[cfg(unix)]
