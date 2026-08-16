@@ -168,6 +168,29 @@ pub const fn ciphertext_len(plaintext_len: u64) -> u64 {
     STREAM_NONCE_LEN as u64 + plaintext_len + chunks * TAG_LEN as u64
 }
 
+/// Plaintext length for a given ciphertext length — the inverse of
+/// [`ciphertext_len`].
+///
+/// Used to size progress bars from on-disk file sizes without decrypting
+/// anything. Returns 0 for lengths too short to be a valid stream.
+pub const fn plaintext_len(ciphertext_len: u64) -> u64 {
+    let overhead = STREAM_NONCE_LEN as u64;
+    if ciphertext_len <= overhead {
+        return 0;
+    }
+
+    let body = ciphertext_len - overhead;
+    let chunk = (CHUNK_SIZE + TAG_LEN) as u64;
+
+    // Every full chunk carries one tag; the trailing partial chunk carries one
+    // more unless it is exactly empty.
+    let full = body / chunk;
+    let rest = body % chunk;
+    let tags = if rest == 0 { full } else { full + 1 };
+
+    body.saturating_sub(tags * TAG_LEN as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +246,34 @@ mod tests {
             let mut ct = Vec::new();
             encrypt(&key(), data.as_slice(), &mut ct).unwrap();
             assert_eq!(ct.len() as u64, ciphertext_len(len as u64), "len {len}");
+        }
+    }
+
+    #[test]
+    fn plaintext_len_inverts_ciphertext_len() {
+        for len in [
+            0u64,
+            1,
+            1000,
+            CHUNK_SIZE as u64 - 1,
+            CHUNK_SIZE as u64,
+            CHUNK_SIZE as u64 + 1,
+            CHUNK_SIZE as u64 * 3,
+            CHUNK_SIZE as u64 * 3 + 77,
+        ] {
+            assert_eq!(
+                plaintext_len(ciphertext_len(len)),
+                len,
+                "round trip failed for plaintext length {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn plaintext_len_handles_garbage_lengths() {
+        // Shorter than a nonce: not a valid stream, must not underflow.
+        for len in [0u64, 1, STREAM_NONCE_LEN as u64] {
+            assert_eq!(plaintext_len(len), 0);
         }
     }
 

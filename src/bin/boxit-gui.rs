@@ -31,7 +31,11 @@ fn main() -> iced::Result {
         App::view,
     )
     .title(App::title)
-    .window_size((900.0, 620.0))
+    .subscription(App::subscription)
+    // The app closes the window itself, after re-locking the vault. Without
+    // this, iced would exit immediately and leave the files decrypted.
+    .exit_on_close_request(false)
+    .window_size((640.0, 480.0))
     .run()
 }
 

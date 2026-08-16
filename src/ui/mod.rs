@@ -4,5 +4,5 @@
 //! depend on `vault`, but never the other way round.
 
 pub mod app;
-pub mod tab;
 pub mod unlock;
+pub mod vault_screen;

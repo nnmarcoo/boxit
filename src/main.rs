@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use boxit::crypto::kdf::KdfParams;
 use boxit::vault::path::VirtualPath;
-use boxit::vault::{Entry, Vault};
+use boxit::vault::{Entry, Vault, VaultState};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,6 +28,8 @@ fn main() -> ExitCode {
         ["export", dir, path, dest] => cmd_export(Path::new(dir), path, Path::new(dest)),
         ["cat", dir, path] => cmd_cat(Path::new(dir), path),
         ["lock", dir] => cmd_lock(Path::new(dir)),
+        ["unlock", dir] => cmd_unlock(Path::new(dir)),
+        ["status", dir] => cmd_status(Path::new(dir)),
         _ => {
             usage();
             return ExitCode::FAILURE;
@@ -53,7 +55,9 @@ usage:
   boxit import <vault-dir> <src-file|src-dir> <vault-path>
   boxit export <vault-dir> <vault-path> <dest-file>
   boxit cat    <vault-dir> <vault-path>
-  boxit lock   <vault-dir>              encrypt any plaintext in the vault
+  boxit lock   <vault-dir>              encrypt everything in the vault
+  boxit unlock <vault-dir>              decrypt everything to real files
+  boxit status <vault-dir>              show whether the vault is locked
 
 The passphrase is read from BOXIT_PASSPHRASE."
     );
@@ -171,6 +175,43 @@ fn cmd_lock(dir: &Path) -> Result<()> {
         eprintln!("could not encrypt {name}: {why} (left unencrypted)");
     }
 
+    vault.close()?;
+    Ok(())
+}
+
+/// Decrypt the whole vault to real files on disk.
+fn cmd_unlock(dir: &Path) -> Result<()> {
+    let vault = open(dir)?;
+    let report = vault.decrypt_all(&VirtualPath::root())?;
+
+    if report.is_empty() {
+        println!("nothing to decrypt");
+    } else {
+        println!(
+            "decrypted {} file(s), {} folder(s), {} bytes",
+            report.files, report.directories, report.bytes
+        );
+        println!("these files are now readable by any program on this computer");
+    }
+    for (name, why) in &report.failed {
+        eprintln!("could not decrypt {name}: {why} (left encrypted)");
+    }
+
+    vault.close()?;
+    Ok(())
+}
+
+fn cmd_status(dir: &Path) -> Result<()> {
+    let vault = open(dir)?;
+    println!(
+        "{}",
+        match vault.state()? {
+            VaultState::Empty => "empty",
+            VaultState::Locked => "locked",
+            VaultState::Unlocked => "unlocked — files are readable by any program",
+            VaultState::Mixed => "partly locked — run lock or unlock again to finish",
+        }
+    );
     vault.close()?;
     Ok(())
 }
