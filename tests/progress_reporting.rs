@@ -36,7 +36,7 @@ fn root() -> VirtualPath {
 /// Collect every progress update an operation emits.
 fn collect<F>(op: F) -> Vec<Progress>
 where
-    F: FnOnce(&mut dyn FnMut(Progress)),
+    F: FnOnce(&mut (dyn FnMut(Progress) + Send)),
 {
     let seen = Arc::new(Mutex::new(Vec::new()));
     {

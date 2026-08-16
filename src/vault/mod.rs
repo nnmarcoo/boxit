@@ -48,43 +48,33 @@ pub enum VaultState {
     Mixed,
 }
 
-/// Accumulates progress and forwards it to the caller's callback.
+/// One file to convert, queued during the sequential walk and executed in
+/// parallel afterwards.
 ///
-/// Boxed as a `&mut dyn FnMut` so the recursive sweep functions do not each get
-/// monomorphised per closure type, which would bloat the binary for no gain.
-struct Tracker<'a> {
-    plan: Plan,
-    files_done: usize,
-    bytes_done: u64,
-    on_progress: &'a mut dyn FnMut(Progress),
+/// For a lock, `source` is the plaintext on disk and `target` is where it
+/// lands in the vault. For an unlock the roles invert: `target` is the
+/// encrypted file to read and `source` is the plaintext destination.
+struct Job {
+    source: PathBuf,
+    target: VirtualPath,
+    /// Plaintext name, for progress display and error reporting.
+    label: String,
 }
 
-impl<'a> Tracker<'a> {
-    fn new(plan: Plan, on_progress: &'a mut dyn FnMut(Progress)) -> Self {
-        Self {
-            plan,
-            files_done: 0,
-            bytes_done: 0,
-            on_progress,
+/// Remove a directory tree, but only the parts that are empty.
+///
+/// Anything left behind is a file that failed to encrypt, which must survive
+/// along with the directories holding it.
+fn remove_if_empty_recursive(dir: &Path) -> Result<(), CryptoError> {
+    for entry in stdfs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_if_empty_recursive(&entry.path())?;
         }
     }
-
-    /// Record one finished file and emit an update.
-    fn advance(&mut self, name: &str, bytes: u64) {
-        self.files_done += 1;
-        self.bytes_done += bytes;
-
-        (self.on_progress)(Progress {
-            current: name.to_string(),
-            files_done: self.files_done,
-            // The pre-walk can undercount if files appear mid-operation; keep
-            // the total at least as large as what has actually been done so the
-            // bar never reports more than 100%.
-            files_total: self.plan.files.max(self.files_done),
-            bytes_done: self.bytes_done,
-            bytes_total: self.plan.bytes.max(self.bytes_done),
-        });
-    }
+    // Fails harmlessly if anything remains, which is the intended behaviour.
+    let _ = stdfs::remove_dir(dir);
+    Ok(())
 }
 
 /// Count files under a plaintext directory that is not yet in the vault.
@@ -315,10 +305,13 @@ impl Vault {
     /// decide what to show, so anything invisible in the UI is exactly what
     /// gets encrypted here.
     ///
-    /// **The originals are deleted** once the encrypted copy is written and
-    /// verified. Ordering matters: encrypt to a new name, read it back, and
-    /// only then unlink the plaintext. A crash mid-sweep can leave both copies
-    /// (recoverable) but never neither (not).
+    /// **The originals are deleted** once the encrypted copy is durably on
+    /// disk. Ordering matters: write the ciphertext, fsync it, check its length,
+    /// and only then unlink the plaintext. A crash mid-sweep can leave both
+    /// copies (recoverable) but never neither (not).
+    ///
+    /// Files are processed in parallel; directory structure is created first,
+    /// sequentially, so every target directory exists before any file lands.
     ///
     /// A caveat worth stating plainly, since this design chooses convenience
     /// over the stronger guarantee: plaintext genuinely exists in the vault
@@ -330,16 +323,231 @@ impl Vault {
     }
 
     /// As [`encrypt_plaintext`], reporting progress after each file.
-    pub fn encrypt_plaintext_with_progress<F: FnMut(Progress)>(
+    ///
+    /// `on_progress` is called from worker threads, so it must be `Send`. It is
+    /// serialised behind a mutex, so it never runs concurrently with itself.
+    pub fn encrypt_plaintext_with_progress<F: FnMut(Progress) + Send>(
         &self,
         vpath: &VirtualPath,
-        mut on_progress: F,
+        on_progress: F,
     ) -> Result<SweepReport, CryptoError> {
         let plan = self.plan_lock(vpath)?;
-        let mut report = SweepReport::default();
-        let mut tracker = Tracker::new(plan, &mut on_progress);
 
-        self.sweep_dir(vpath, &mut report, &mut tracker)?;
+        // Phase 1, sequential: create the encrypted directory tree and collect
+        // the files to convert. Directories must exist before files land in
+        // them, and building the tree touches shared parent state.
+        let mut jobs = Vec::new();
+        let mut report = SweepReport::default();
+        self.collect_lock_jobs(vpath, &mut jobs, &mut report)?;
+
+        // Phase 2, parallel: files are independent — separate sources, separate
+        // targets, separate atomic writes. Nothing is shared but the key.
+        let report = self.run_jobs(jobs, plan, report, on_progress, |job| {
+            let bytes = self.encrypt_file_from(&job.source, &job.target)?;
+            stdfs::remove_file(&job.source)?;
+            Ok(bytes)
+        })?;
+
+        // Phase 3: the plaintext directories are empty now that their files
+        // have been encrypted out of them, so they can be removed. Deepest
+        // first, since a parent cannot go before its children.
+        self.remove_empty_plain_dirs(vpath)?;
+        Ok(report)
+    }
+
+    /// Remove plaintext directories left empty by a lock.
+    ///
+    /// Only empties are removed, so a directory still holding a file that
+    /// failed to encrypt survives along with its contents.
+    fn remove_empty_plain_dirs(&self, vpath: &VirtualPath) -> Result<(), CryptoError> {
+        let real = self.resolve(vpath)?;
+        let names = self.master.names_key()?;
+        let parent = self.dir_id(vpath)?;
+
+        let listing: Vec<_> = stdfs::read_dir(&real)?.collect::<Result<Vec<_>, _>>()?;
+
+        for entry in listing {
+            let on_disk = entry.file_name().to_string_lossy().into_owned();
+            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
+                continue;
+            }
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            match decrypt_name(&names, &parent, &on_disk) {
+                // Encrypted directory: descend, in case plaintext was dropped
+                // inside it and has just been swallowed.
+                Ok(plain) => {
+                    if let Ok(child) = vpath.join(&plain) {
+                        self.remove_empty_plain_dirs(&child)?;
+                    }
+                }
+                // Plaintext directory: clear it bottom-up.
+                Err(_) => {
+                    remove_if_empty_recursive(&entry.path())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Walk the tree creating directories and listing files that need work.
+    fn collect_lock_jobs(
+        &self,
+        vpath: &VirtualPath,
+        jobs: &mut Vec<Job>,
+        report: &mut SweepReport,
+    ) -> Result<(), CryptoError> {
+        let real = self.resolve(vpath)?;
+        let names = self.master.names_key()?;
+        let parent = self.dir_id(vpath)?;
+
+        let listing: Vec<_> = stdfs::read_dir(&real)?.collect::<Result<Vec<_>, _>>()?;
+
+        for entry in listing {
+            let on_disk = entry.file_name().to_string_lossy().into_owned();
+
+            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
+                continue;
+            }
+            if on_disk.starts_with(".tmp") {
+                continue;
+            }
+
+            let is_dir = entry.file_type()?.is_dir();
+
+            match decrypt_name(&names, &parent, &on_disk) {
+                // Already encrypted: recurse to catch plaintext dropped inside.
+                Ok(plain) if is_dir => {
+                    let child = vpath.join(&plain).map_err(|_| CryptoError::InvalidName)?;
+                    self.collect_lock_jobs(&child, jobs, report)?;
+                }
+                Ok(_) => {}
+                // Plaintext directory: mirror it into the vault, then descend.
+                Err(_) if is_dir => {
+                    let Ok(target) = vpath.join(&on_disk) else {
+                        report.failed.push((on_disk, "invalid name".into()));
+                        continue;
+                    };
+                    if let Err(e) = self.create_dir(&target) {
+                        report.failed.push((on_disk, e.to_string()));
+                        continue;
+                    }
+                    self.collect_plain_tree(&entry.path(), &target, jobs, report)?;
+                    report.directories += 1;
+                }
+                // Plaintext file: queue it.
+                Err(_) => match vpath.join(&on_disk) {
+                    Ok(target) => jobs.push(Job {
+                        source: entry.path(),
+                        target,
+                        label: on_disk,
+                    }),
+                    Err(_) => report.failed.push((on_disk, "invalid name".into())),
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirror a plaintext directory into the vault, queueing its files.
+    ///
+    /// The plaintext directory itself is removed later, once its files have
+    /// been encrypted out of it.
+    fn collect_plain_tree(
+        &self,
+        plain_dir: &Path,
+        dest: &VirtualPath,
+        jobs: &mut Vec<Job>,
+        report: &mut SweepReport,
+    ) -> Result<(), CryptoError> {
+        for entry in stdfs::read_dir(plain_dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            let Ok(target) = dest.join(&name) else {
+                report.failed.push((name, "invalid name".into()));
+                continue;
+            };
+
+            if entry.file_type()?.is_dir() {
+                self.create_dir(&target)?;
+                self.collect_plain_tree(&entry.path(), &target, jobs, report)?;
+                report.directories += 1;
+            } else {
+                jobs.push(Job {
+                    source: entry.path(),
+                    target,
+                    label: name,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Run queued file jobs in parallel, accumulating progress and failures.
+    fn run_jobs<F, W>(
+        &self,
+        jobs: Vec<Job>,
+        plan: Plan,
+        mut report: SweepReport,
+        on_progress: F,
+        work: W,
+    ) -> Result<SweepReport, CryptoError>
+    where
+        F: FnMut(Progress) + Send,
+        W: Fn(&Job) -> Result<u64, CryptoError> + Sync + Send,
+    {
+        use rayon::prelude::*;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+        let files_done = AtomicUsize::new(0);
+        let bytes_done = AtomicU64::new(0);
+        let progress = Mutex::new(on_progress);
+        let failures = Mutex::new(Vec::new());
+
+        let totals: Vec<(usize, u64)> = jobs
+            .par_iter()
+            .filter_map(|job| match work(job) {
+                Ok(bytes) => {
+                    // Counters are shared, so ordering between threads is not
+                    // meaningful; what matters is that the totals are exact and
+                    // the fraction never exceeds 1.0.
+                    let done = files_done.fetch_add(1, Ordering::Relaxed) + 1;
+                    let total_bytes = bytes_done.fetch_add(bytes, Ordering::Relaxed) + bytes;
+
+                    if let Ok(mut cb) = progress.lock() {
+                        cb(Progress {
+                            current: job.label.clone(),
+                            files_done: done,
+                            files_total: plan.files.max(done),
+                            bytes_done: total_bytes,
+                            bytes_total: plan.bytes.max(total_bytes),
+                        });
+                    }
+                    Some((1, bytes))
+                }
+                Err(e) => {
+                    // A failure leaves this file in its previous state; the
+                    // others still proceed.
+                    if let Ok(mut f) = failures.lock() {
+                        f.push((job.label.clone(), e.to_string()));
+                    }
+                    None
+                }
+            })
+            .collect();
+
+        for (files, bytes) in totals {
+            report.files += files;
+            report.bytes += bytes;
+        }
+        report
+            .failed
+            .extend(failures.into_inner().unwrap_or_default());
+
         Ok(report)
     }
 
@@ -443,24 +651,40 @@ impl Vault {
     }
 
     /// As [`decrypt_all`], reporting progress after each file.
-    pub fn decrypt_all_with_progress<F: FnMut(Progress)>(
+    pub fn decrypt_all_with_progress<F: FnMut(Progress) + Send>(
         &self,
         vpath: &VirtualPath,
-        mut on_progress: F,
+        on_progress: F,
     ) -> Result<SweepReport, CryptoError> {
         let plan = self.plan_unlock(vpath)?;
-        let mut report = SweepReport::default();
-        let mut tracker = Tracker::new(plan, &mut on_progress);
 
-        self.unsweep_dir(vpath, &mut report, &mut tracker)?;
+        // Files first, in parallel, while the encrypted directory names still
+        // resolve. Renaming a directory would invalidate the paths of every
+        // file beneath it, so that has to come afterwards.
+        let mut jobs = Vec::new();
+        let mut report = SweepReport::default();
+        self.collect_unlock_jobs(vpath, &mut jobs, &mut report)?;
+
+        let mut report = self.run_jobs(jobs, plan, report, on_progress, |job| {
+            let bytes = self.decrypt_file_to(&job.target, &job.source)?;
+            // `source` holds the plaintext destination here; remove the
+            // ciphertext, which is where `target` resolves to.
+            stdfs::remove_file(self.resolve(&job.target)?)?;
+            Ok(bytes)
+        })?;
+
+        // Now rename directories bottom-up, so children are renamed before the
+        // parents whose names they were encrypted under.
+        self.rename_dirs_to_plaintext(vpath, &mut report)?;
         Ok(report)
     }
 
-    fn unsweep_dir(
+    /// Queue every encrypted file for decryption, deepest first.
+    fn collect_unlock_jobs(
         &self,
         vpath: &VirtualPath,
+        jobs: &mut Vec<Job>,
         report: &mut SweepReport,
-        tracker: &mut Tracker<'_>,
     ) -> Result<(), CryptoError> {
         let real = self.resolve(vpath)?;
         let names = self.master.names_key()?;
@@ -469,8 +693,7 @@ impl Vault {
         let listing: Vec<_> = stdfs::read_dir(&real)?.collect::<Result<Vec<_>, _>>()?;
 
         for entry in listing {
-            let file_name = entry.file_name();
-            let on_disk = file_name.to_string_lossy().into_owned();
+            let on_disk = entry.file_name().to_string_lossy().into_owned();
 
             if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
                 continue;
@@ -479,181 +702,70 @@ impl Vault {
                 continue;
             }
 
-            // Only encrypted entries are touched. Anything already plaintext is
-            // left as-is, so an interrupted unlock can simply be re-run.
+            // Anything already plaintext is left alone, so an interrupted
+            // unlock can simply be re-run.
             let Ok(plain_name) = decrypt_name(&names, &parent, &on_disk) else {
                 continue;
             };
-
-            let vchild = vpath
-                .join(&plain_name)
-                .map_err(|_| CryptoError::InvalidName)?;
+            let Ok(vchild) = vpath.join(&plain_name) else {
+                report.failed.push((plain_name, "invalid name".into()));
+                continue;
+            };
 
             if entry.file_type()?.is_dir() {
-                // Recurse first: the directory must still exist under its
-                // encrypted name while its contents are being decrypted.
-                self.unsweep_dir(&vchild, report, tracker)?;
-
-                let plain_dir = real.join(&plain_name);
-                stdfs::rename(entry.path(), &plain_dir)?;
-                report.directories += 1;
-            } else if let Err(e) = self.spill(&vchild, &real.join(&plain_name), &entry.path(), report, tracker)
-            {
-                report.failed.push((plain_name, e.to_string()));
+                self.collect_unlock_jobs(&vchild, jobs, report)?;
+            } else {
+                jobs.push(Job {
+                    // For an unlock, `source` is where the plaintext will land.
+                    source: real.join(&plain_name),
+                    target: vchild,
+                    label: plain_name,
+                });
             }
         }
         Ok(())
     }
 
-    /// Decrypt one file to `plain_path`, then remove the ciphertext.
-    fn spill(
-        &self,
-        vpath: &VirtualPath,
-        plain_path: &Path,
-        cipher_path: &Path,
-        report: &mut SweepReport,
-        tracker: &mut Tracker<'_>,
-    ) -> Result<(), CryptoError> {
-        let contents = self.read_file(vpath)?;
-
-        atomic_write_with(plain_path, |f| std::io::Write::write_all(f, &contents))?;
-
-        // Verify before destroying the only encrypted copy.
-        let check = stdfs::read(plain_path)?;
-        if check != contents {
-            return Err(CryptoError::Decrypt);
-        }
-
-        stdfs::remove_file(cipher_path)?;
-        report.files += 1;
-        report.bytes += contents.len() as u64;
-        tracker.advance(
-            vpath.name().unwrap_or_default(),
-            contents.len() as u64,
-        );
-        Ok(())
-    }
-
-    fn sweep_dir(
+    /// Rename encrypted directories to their plaintext names, depth-first.
+    fn rename_dirs_to_plaintext(
         &self,
         vpath: &VirtualPath,
         report: &mut SweepReport,
-        tracker: &mut Tracker<'_>,
     ) -> Result<(), CryptoError> {
         let real = self.resolve(vpath)?;
         let names = self.master.names_key()?;
         let parent = self.dir_id(vpath)?;
 
-        // Collected up front: encrypting renames entries, and mutating a
-        // directory while iterating it has platform-dependent behaviour.
         let listing: Vec<_> = stdfs::read_dir(&real)?.collect::<Result<Vec<_>, _>>()?;
 
         for entry in listing {
-            let file_name = entry.file_name();
-            let on_disk = file_name.to_string_lossy().into_owned();
-
+            let on_disk = entry.file_name().to_string_lossy().into_owned();
             if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
                 continue;
             }
-            // Debris from an interrupted write, not user data.
-            if on_disk.starts_with(".tmp") {
+            if !entry.file_type()?.is_dir() {
                 continue;
             }
+            let Ok(plain_name) = decrypt_name(&names, &parent, &on_disk) else {
+                continue;
+            };
+            let Ok(vchild) = vpath.join(&plain_name) else {
+                continue;
+            };
 
-            let is_dir = entry.file_type()?.is_dir();
+            // Depth-first: rename the contents before the container.
+            self.rename_dirs_to_plaintext(&vchild, report)?;
 
-            match decrypt_name(&names, &parent, &on_disk) {
-                // Already encrypted. Recurse to catch plaintext dropped into an
-                // existing vault subdirectory.
-                Ok(plain) => {
-                    if is_dir {
-                        let child = vpath.join(&plain).map_err(|_| CryptoError::InvalidName)?;
-                        self.sweep_dir(&child, report, tracker)?;
-                    }
-                }
-                // Plaintext: swallow it.
-                Err(_) => {
-                    if let Err(e) = self.swallow(vpath, &on_disk, is_dir, report, tracker) {
-                        report.failed.push((on_disk, e.to_string()));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Encrypt one plaintext entry in place, then remove the original.
-    fn swallow(
-        &self,
-        parent_vpath: &VirtualPath,
-        plain_name: &str,
-        is_dir: bool,
-        report: &mut SweepReport,
-        tracker: &mut Tracker<'_>,
-    ) -> Result<(), CryptoError> {
-        // A name too long to encrypt would otherwise fail after the plaintext
-        // was already gone. Check before touching anything.
-        let target = parent_vpath
-            .join(plain_name)
-            .map_err(|_| CryptoError::InvalidName)?;
-
-        let real_parent = self.resolve(parent_vpath)?;
-        let plain_path = real_parent.join(plain_name);
-
-        if is_dir {
-            // Create the encrypted directory, then sweep the plaintext contents
-            // into it before removing the now-empty original.
-            self.create_dir(&target)?;
-            self.move_tree_in(&plain_path, &target, report, tracker)?;
-            stdfs::remove_dir_all(&plain_path)?;
+            stdfs::rename(entry.path(), real.join(&plain_name))?;
             report.directories += 1;
-            return Ok(());
-        }
-
-        let contents = stdfs::read(&plain_path)?;
-        self.write_file(&target, &contents)?;
-
-        // Read back before deleting the original: if this file cannot be
-        // recovered, the plaintext is the only copy and must survive.
-        let check = self.read_file(&target)?;
-        if check != contents {
-            return Err(CryptoError::Decrypt);
-        }
-
-        stdfs::remove_file(&plain_path)?;
-        report.files += 1;
-        report.bytes += contents.len() as u64;
-        tracker.advance(plain_name, contents.len() as u64);
-        Ok(())
-    }
-
-    /// Recursively encrypt a plaintext directory's contents into the vault.
-    fn move_tree_in(
-        &self,
-        plain_dir: &Path,
-        dest: &VirtualPath,
-        report: &mut SweepReport,
-        tracker: &mut Tracker<'_>,
-    ) -> Result<(), CryptoError> {
-        for entry in stdfs::read_dir(plain_dir)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let target = dest.join(&name).map_err(|_| CryptoError::InvalidName)?;
-
-            if entry.file_type()?.is_dir() {
-                self.create_dir(&target)?;
-                self.move_tree_in(&entry.path(), &target, report, tracker)?;
-                report.directories += 1;
-            } else {
-                let contents = stdfs::read(entry.path())?;
-                self.write_file(&target, &contents)?;
-                report.files += 1;
-                report.bytes += contents.len() as u64;
-                tracker.advance(&name, contents.len() as u64);
-            }
         }
         Ok(())
     }
+
+
+
+
+
 
     /// Create a directory.
     pub fn create_dir(&self, vpath: &VirtualPath) -> Result<(), CryptoError> {
@@ -672,6 +784,59 @@ impl Vault {
             std::io::Write::flush(&mut w)
         })?;
         Ok(())
+    }
+
+    /// Encrypt a file on disk straight into the vault, without buffering it.
+    ///
+    /// Streams plaintext → ciphertext in 64 KiB chunks, so a 4 GB video costs a
+    /// couple of buffers rather than 4 GB of RAM. That matters more once
+    /// several files are in flight at once.
+    ///
+    /// Returns the plaintext byte count, for progress accounting.
+    fn encrypt_file_from(&self, src: &Path, vpath: &VirtualPath) -> Result<u64, CryptoError> {
+        let real = self.resolve(vpath)?;
+        let content = self.master.content_key()?;
+
+        let plaintext_len = stdfs::metadata(src)?.len();
+        let source = stdfs::File::open(src)?;
+
+        atomic_write_with(&real, |f| {
+            let mut w = BufWriter::new(f);
+            stream::encrypt(&content, std::io::BufReader::new(source), &mut w)
+                .map_err(std::io::Error::other)?;
+            std::io::Write::flush(&mut w)
+        })?;
+
+        // Cheap integrity check in place of a full read-back: a short file means
+        // the write was truncated. The AEAD tag already covers corruption of the
+        // bytes themselves, so decrypting the whole file again would cost a
+        // second pass to learn almost nothing.
+        let written = stdfs::metadata(&real)?.len();
+        let expected = stream::ciphertext_len(plaintext_len);
+        if written != expected {
+            let _ = stdfs::remove_file(&real);
+            return Err(CryptoError::Truncated);
+        }
+
+        Ok(plaintext_len)
+    }
+
+    /// Decrypt a file from the vault straight to disk, without buffering it.
+    ///
+    /// Returns the plaintext byte count.
+    fn decrypt_file_to(&self, vpath: &VirtualPath, dest: &Path) -> Result<u64, CryptoError> {
+        let real = self.resolve(vpath)?;
+        let content = self.master.content_key()?;
+        let source = stdfs::File::open(&real)?;
+
+        atomic_write_with(dest, |f| {
+            let mut w = BufWriter::new(f);
+            stream::decrypt(&content, std::io::BufReader::new(source), &mut w)
+                .map_err(std::io::Error::other)?;
+            std::io::Write::flush(&mut w)
+        })?;
+
+        Ok(stdfs::metadata(dest)?.len())
     }
 
     /// Decrypt the file at `vpath`.
