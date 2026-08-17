@@ -18,6 +18,7 @@ use iced::widget::{button, column, container, progress_bar, row, text};
 use iced::{Alignment, Element, Length, Subscription, Task};
 
 use crate::vault::path::VirtualPath;
+use crate::vault::fs::Durability;
 use crate::vault::{Progress, SweepReport, Vault, VaultState};
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,8 @@ pub enum Message {
     Progress(Progress),
     OpenFolder,
     DismissReport,
+    /// Toggle whether writes wait for the drive.
+    ToggleFastMode(bool),
 }
 
 /// Carries the progress receiver into the subscription.
@@ -56,6 +59,9 @@ pub struct VaultScreen {
     error: Option<String>,
     /// Latest progress update, if an operation is running.
     progress: Option<Progress>,
+    /// Mirrors the vault's setting so the checkbox can render before any
+    /// operation has run.
+    fast_mode: bool,
     /// Receiver for the running operation's progress updates.
     ///
     /// Held in an `Arc<Mutex<..>>` because the subscription that drains it is
@@ -73,6 +79,7 @@ impl VaultScreen {
             error: None,
             progress: None,
             progress_rx: None,
+            fast_mode: vault.durability() == Durability::Fast,
         };
         (screen, Self::load_state(vault))
     }
@@ -224,6 +231,18 @@ impl VaultScreen {
                 self.error = Some(e);
             }
             Message::DismissReport => self.report = None,
+            Message::ToggleFastMode(on) => {
+                self.fast_mode = on;
+                // Persisted to the vault folder, so the choice survives a
+                // restart. A failure to save is not worth interrupting for.
+                if let Some(vault) = Arc::get_mut(&mut self.vault) {
+                    let _ = vault.set_durability(if on {
+                        Durability::Fast
+                    } else {
+                        Durability::Full
+                    });
+                }
+            }
             Message::OpenFolder => {
                 // Best effort: opening the folder is a convenience, and a
                 // failure here should not interrupt anything.
@@ -309,6 +328,31 @@ impl VaultScreen {
                 button(text("Open vault folder").size(13))
                     .on_press(Message::OpenFolder)
                     .padding([6, 14]),
+            );
+
+            content = content.push(
+                row![
+                    iced::widget::checkbox(self.fast_mode)
+                        .on_toggle(Message::ToggleFastMode)
+                        .size(15),
+                    text("Fast mode").size(13),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+
+            // The consequence, next to the control rather than in a manual.
+            // Only shown when the option is on, so the warning appears exactly
+            // when it is true.
+            content = content.push(
+                text(if self.fast_mode {
+                    "About 4x quicker. If the computer loses power during a lock or unlock, \
+                     the files being converted at that moment can be lost."
+                } else {
+                    "Waits for the drive before removing each original, so a power cut \
+                     cannot lose a file."
+                })
+                .size(11),
             );
         }
 

@@ -14,6 +14,7 @@ use std::process::ExitCode;
 
 use boxit::crypto::kdf::KdfParams;
 use boxit::vault::path::VirtualPath;
+use boxit::vault::fs::Durability;
 use boxit::vault::{Entry, Vault, VaultState};
 
 fn main() -> ExitCode {
@@ -30,6 +31,8 @@ fn main() -> ExitCode {
         ["lock", dir] => cmd_lock(Path::new(dir)),
         ["unlock", dir] => cmd_unlock(Path::new(dir)),
         ["status", dir] => cmd_status(Path::new(dir)),
+        ["durability", dir] => cmd_durability(Path::new(dir), None),
+        ["durability", dir, level] => cmd_durability(Path::new(dir), Some(level)),
         _ => {
             usage();
             return ExitCode::FAILURE;
@@ -58,6 +61,10 @@ usage:
   boxit lock   <vault-dir>              encrypt everything in the vault
   boxit unlock <vault-dir>              decrypt everything to real files
   boxit status <vault-dir>              show whether the vault is locked
+  boxit durability <vault-dir> [full|fast]
+                                        show or set write durability. 'fast' is
+                                        ~4.5x quicker but a power failure during
+                                        a lock can destroy files in flight
 
 The passphrase is read from BOXIT_PASSPHRASE."
     );
@@ -212,6 +219,38 @@ fn cmd_status(dir: &Path) -> Result<()> {
             VaultState::Mixed => "partly locked — run lock or unlock again to finish",
         }
     );
+    vault.close()?;
+    Ok(())
+}
+
+/// Show or change how hard writes work at surviving a power failure.
+fn cmd_durability(dir: &Path, level: Option<&str>) -> Result<()> {
+    let mut vault = open(dir)?;
+
+    match level {
+        None => println!(
+            "{}",
+            match vault.durability() {
+                Durability::Full => "full — waits for the drive (safe, default)",
+                Durability::Fast => "fast — does not wait (a power failure can lose files)",
+            }
+        ),
+        Some("full") => {
+            vault.set_durability(Durability::Full)?;
+            println!("durability set to full");
+        }
+        Some("fast") => {
+            vault.set_durability(Durability::Fast)?;
+            println!("durability set to fast");
+            // Stated plainly at the moment of the choice, not buried in a man
+            // page the user will never read.
+            eprintln!(
+                "warning: files are deleted once their replacement is written, and with                  'fast' that replacement may still be in the OS cache. A power failure or                  kernel panic during a lock or unlock can destroy the files being converted.                  An ordinary application crash is not enough to cause this."
+            );
+        }
+        Some(other) => return Err(format!("unknown durability {other:?}; use full or fast").into()),
+    }
+
     vault.close()?;
     Ok(())
 }

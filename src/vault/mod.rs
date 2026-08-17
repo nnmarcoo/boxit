@@ -8,6 +8,7 @@
 pub mod fs;
 pub mod header;
 pub mod path;
+pub mod settings;
 
 use std::fs as stdfs;
 use std::io::BufWriter;
@@ -18,9 +19,10 @@ use crate::crypto::kdf::{KdfParams, Key};
 use crate::crypto::names::{DirId, decrypt_name, encrypt_name};
 use crate::crypto::stream;
 
-use self::fs::{VaultLock, atomic_write_with};
+use self::fs::{Durability, VaultLock, atomic_write_durability, atomic_write_with};
 use self::header::{HEADER_FILENAME, Header};
 use self::path::VirtualPath;
+use self::settings::{SETTINGS_FILENAME, Settings};
 
 /// One entry in a directory listing.
 ///
@@ -81,6 +83,14 @@ struct Written {
     /// Plaintext byte count, for progress and reporting.
     bytes: u64,
     label: String,
+}
+
+/// Whether a filename is vault bookkeeping rather than user data.
+///
+/// These live unencrypted in the vault root and must never be swept up by a
+/// lock — encrypting the header would make the vault unopenable (§6.1).
+fn is_vault_metadata(name: &str) -> bool {
+    name == HEADER_FILENAME || name == fs::LOCK_FILENAME || name == SETTINGS_FILENAME
 }
 
 /// Split jobs into batches bounded by total bytes.
@@ -206,6 +216,12 @@ pub struct Vault {
     root: PathBuf,
     master: Key,
     lock: Option<VaultLock>,
+    /// How hard file conversions work at surviving a power failure.
+    ///
+    /// Applies only to bulk lock/unlock. The header is always written at full
+    /// durability: it is small, written once, and losing it makes the whole
+    /// vault unrecoverable.
+    durability: Durability,
 }
 
 impl std::fmt::Debug for Vault {
@@ -251,7 +267,28 @@ impl Vault {
             root: dir.to_path_buf(),
             master,
             lock: Some(lock),
+            durability: Settings::load(dir).durability,
         })
+    }
+
+    /// Choose how hard writes work at surviving a power failure.
+    ///
+    /// Defaults to [`Durability::Full`]. See that type for what `Fast` gives up
+    /// — it is a real trade, not a free speedup.
+    pub fn with_durability(mut self, durability: Durability) -> Self {
+        self.durability = durability;
+        self
+    }
+
+    /// Change the durability setting and remember it for next time.
+    pub fn set_durability(&mut self, durability: Durability) -> std::io::Result<()> {
+        self.durability = durability;
+        Settings { durability }.save(&self.root)
+    }
+
+    /// The current durability setting.
+    pub fn durability(&self) -> Durability {
+        self.durability
     }
 
     /// Release the instance lock explicitly.
@@ -327,7 +364,7 @@ impl Vault {
             let encrypted = file_name.to_string_lossy();
 
             // Header and lock live in the root and are not encrypted (§6.1).
-            if encrypted == HEADER_FILENAME || encrypted == fs::LOCK_FILENAME {
+            if is_vault_metadata(&encrypted) {
                 continue;
             }
 
@@ -424,7 +461,7 @@ impl Vault {
 
         for entry in listing {
             let on_disk = entry.file_name().to_string_lossy().into_owned();
-            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
+            if is_vault_metadata(&on_disk) {
                 continue;
             }
             if !entry.file_type()?.is_dir() {
@@ -464,10 +501,7 @@ impl Vault {
         for entry in listing {
             let on_disk = entry.file_name().to_string_lossy().into_owned();
 
-            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
-                continue;
-            }
-            if on_disk.starts_with(".tmp") {
+            if is_vault_metadata(&on_disk) || on_disk.starts_with(".tmp") {
                 continue;
             }
 
@@ -703,10 +737,7 @@ impl Vault {
             let entry = entry?;
             let on_disk = entry.file_name().to_string_lossy().into_owned();
 
-            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
-                continue;
-            }
-            if on_disk.starts_with(".tmp") {
+            if is_vault_metadata(&on_disk) || on_disk.starts_with(".tmp") {
                 continue;
             }
 
@@ -813,10 +844,7 @@ impl Vault {
         for entry in listing {
             let on_disk = entry.file_name().to_string_lossy().into_owned();
 
-            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
-                continue;
-            }
-            if on_disk.starts_with(".tmp") {
+            if is_vault_metadata(&on_disk) || on_disk.starts_with(".tmp") {
                 continue;
             }
 
@@ -860,7 +888,7 @@ impl Vault {
 
         for entry in listing {
             let on_disk = entry.file_name().to_string_lossy().into_owned();
-            if on_disk == HEADER_FILENAME || on_disk == fs::LOCK_FILENAME {
+            if is_vault_metadata(&on_disk) {
                 continue;
             }
             if !entry.file_type()?.is_dir() {
@@ -920,7 +948,7 @@ impl Vault {
         let plaintext_len = stdfs::metadata(src)?.len();
         let source = stdfs::File::open(src)?;
 
-        atomic_write_with(&real, |f| {
+        atomic_write_durability(&real, self.durability, |f| {
             let mut w = BufWriter::new(f);
             stream::encrypt(&content, std::io::BufReader::new(source), &mut w)
                 .map_err(std::io::Error::other)?;
@@ -949,7 +977,7 @@ impl Vault {
         let content = self.master.content_key()?;
         let source = stdfs::File::open(&real)?;
 
-        atomic_write_with(dest, |f| {
+        atomic_write_durability(dest, self.durability, |f| {
             let mut w = BufWriter::new(f);
             stream::decrypt(&content, std::io::BufReader::new(source), &mut w)
                 .map_err(std::io::Error::other)?;
@@ -1011,7 +1039,7 @@ impl Vault {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
 
-            if name == HEADER_FILENAME || name == fs::LOCK_FILENAME || name.starts_with(".tmp") {
+            if is_vault_metadata(&name) || name.starts_with(".tmp") {
                 continue;
             }
 

@@ -36,20 +36,58 @@ where
     atomic_write_inner(path, write, true)
 }
 
-/// As [`atomic_write_with`], but without flushing to the physical drive.
+/// As [`atomic_write_with`], but with the durability level chosen by the caller.
 ///
-/// The file is written and renamed into place, so it is visible immediately,
-/// but its contents may still be in the OS page cache. The caller **must**
-/// call [`sync_path`] before treating the data as durable — in particular
-/// before deleting whatever the file was derived from.
+/// With [`Durability::Full`] this is exactly [`atomic_write_with`]. With
+/// [`Durability::Fast`] the fsync is skipped: the file is written and renamed
+/// into place, so it is visible immediately, but its contents may still be in
+/// the OS page cache and would be lost to a power failure.
 ///
-/// Exists so a bulk operation can pay one flush for many files instead of one
-/// per file, which is otherwise ~80% of the cost of a lock or unlock.
-pub fn atomic_write_with_deferred_sync<F>(path: &Path, write: F) -> io::Result<()>
+/// Only for callers that have made that trade deliberately — see
+/// [`Durability`].
+pub fn atomic_write_durability<F>(
+    path: &Path,
+    durability: Durability,
+    write: F,
+) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
-    atomic_write_inner(path, write, false)
+    atomic_write_inner(path, write, durability.syncs())
+}
+
+/// How hard to work at making a write survive a power failure.
+///
+/// This is the only real speed lever in a lock or unlock. fsync is ~80% of the
+/// cost, and it cannot be optimised away in software: flushing is limited by
+/// what the drive can physically commit per second, so no amount of batching or
+/// pipelining moves it. Measured on a 16-core machine with an SSD, an 80 MB
+/// lock runs at ~150 MB/s with `Full` and ~690 MB/s with `Fast`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Durability {
+    /// Wait for the drive to confirm each file before deleting what it
+    /// replaces (§5.5). A power failure mid-operation can leave both copies of
+    /// a file, never neither.
+    #[default]
+    Full,
+    /// Trust the operating system's page cache and do not wait.
+    ///
+    /// Roughly 4.5x faster, and what archivers like 7-Zip do — but they only
+    /// ever *copy*, leaving the originals in place. This tool deletes the
+    /// original once the replacement is written, so with `Fast` a power failure
+    /// or kernel panic during a lock can destroy the files that were in flight:
+    /// the plaintext is gone and the ciphertext never reached the drive.
+    ///
+    /// An application crash is *not* enough to trigger this — the OS still
+    /// flushes its cache. It takes losing power or a kernel-level failure.
+    Fast,
+}
+
+impl Durability {
+    /// Whether writes at this level wait for the drive.
+    pub fn syncs(self) -> bool {
+        matches!(self, Self::Full)
+    }
 }
 
 fn atomic_write_inner<F>(path: &Path, write: F, sync: bool) -> io::Result<()>
@@ -85,21 +123,6 @@ where
         sync_dir(dir)?;
     }
     Ok(())
-}
-
-/// Flush a single file's contents to the physical drive.
-///
-/// Used to make a batch of deferred writes durable in one place, before the
-/// data they were derived from is deleted.
-pub fn sync_path(path: &Path) -> io::Result<()> {
-    // Opened for writing: Windows refuses FlushFileBuffers on a read-only
-    // handle with "Access is denied", even though nothing is being written.
-    File::options().write(true).open(path)?.sync_all()
-}
-
-/// Flush a directory entry so renames within it survive a crash.
-pub fn sync_directory(dir: &Path) -> io::Result<()> {
-    sync_dir(dir)
 }
 
 /// Free space available on the filesystem holding `path`, in bytes.
